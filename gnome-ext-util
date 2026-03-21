@@ -1,8 +1,113 @@
 #!/usr/bin/env python3
 
-def main():
-    print("Hello from gnome-ext-util!")
+import argparse
+import sys
+import shutil
+import subprocess
+import json
+
+def fatal(ret_code, str = None):
+  if str is not None:
+    print(f"{str}", file=sys.stderr)
+  exit(ret_code)
+
+
+def ensure_binaries(prgs):
+  if isinstance(prgs, str):
+    if shutil.which(prgs) is None:
+      fatal(1, f"{prgs} is required, but not found")
+    return True
+  elif hasattr(prgs, '__iter__'):
+    for prg in prgs:
+      ensure_binaries(prg)
+
+
+def run_prog(prog, args, input=None):
+  run_args = [prog]
+  run_args.extend(args)
+  try:
+    result = subprocess.run(run_args, input=input, capture_output=True, text=True)
+  except:
+    fatal(1, f"Failed to execute: {" ".join(run_args)}")
+
+  if result.returncode != 0 or len(result.stderr) > 0:
+    fatal(1, f"Failed to execute: {" ".join(run_args)}\nReturn Code {result.returncode}\n{result.stderr}")
+
+  return result.stdout
+
+
+def get_gext_list():
+  return [ ext for ext in run_prog('gnome-extensions', ['list', '--enabled']).split("\n") if len(ext) > 0 ]
+
+
+def get_dconf_dump(ext):
+  return [ line for line in run_prog('dconf', ['dump', f"/org/gnome/shell/extensions/{ext.split('@')[0]}/"]).split("\n") if len(line) > 0 ]
+
+
+def get_gext_info(ext):
+  result = {}
+  for line in run_prog('gnome-extensions', ['info', ext]).split("\n"):
+    if line.startswith(" "):
+      k, v = line.split(":", 1)
+      result[k.strip()] = v.strip()
+  return result
+
+
+def main(args):
+
+  if args.op == 'list':
+    for ext in get_gext_list():
+      print(ext)
+
+  elif args.op == 'dump':
+    gexts = {}
+    for ext in get_gext_list():
+      gexts[ext] = get_gext_info(ext)
+      gexts[ext]['dconf_dump'] = get_dconf_dump(ext)
+    try:
+      with open(args.file, "w") as outfile:
+        json.dump(gexts, outfile, sort_keys=True, indent=2)
+    except Exception as err:
+      fatal(1, f"Unexpected {err=}, {type(err)=}")
+
+  elif args.op == 'load':
+
+    published_gexts = {}
+    try:
+      with open(args.file) as infile:
+        published_gexts = json.load(infile)
+    except Exception as err:
+      fatal(1, f"Unexpected {err=}, {type(err)=}")
+
+    installed_gexts = {}
+    for ext in get_gext_list():
+      installed_gexts[ext] = get_gext_info(ext)
+
+    for ext in sorted(published_gexts.keys()):
+      if ext not in installed_gexts:
+        print(f"Published extension {ext} is not installed")
+      elif published_gexts[ext]["Version"] != installed_gexts[ext]["Version"]:
+        print(f"Extension version mismatch for {ext}")
+        print(f"  Published version: {published_gexts[ext]['Version']}")
+        print(f"  Installed version: {installed_gexts[ext]['Version']}")
+      else:
+        path = f"/org/gnome/shell/extensions/{ext.split('@')[0]}/"
+        # run_prog('dconf', ['reset' '-f', path])
+        cfg = "\n".join(published_gexts[ext]['dconf_dump']) + "\n"
+        # run_prog('dconf' ['load', '-f', path], cfg)
+
+  return 0
 
 
 if __name__ == "__main__":
-    main()
+  ensure_binaries(['gnome-extensions', 'dconf'])
+  parser = argparse.ArgumentParser(prog='gnome-ext-util', description='Utility for saving and restoring gnome extensions', epilog='')
+  parser.add_argument("op", choices=['load', 'dump', 'list'], help="")
+  parser.add_argument("file", nargs='?', default=None, help="")
+  args = parser.parse_args()
+
+  if args.op == "list" and args.file is not None:
+    parser.error("FILE argument is invalid in 'list' mode")
+  if args.op != "list" and args.file is None:
+    parser.error("FILE argument is required in either 'dump' or 'load' mode")
+  exit(main(args))
