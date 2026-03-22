@@ -2,11 +2,15 @@
 
 import argparse
 import sys
+import os
 import shutil
 import subprocess
-import json
 import re
-import requests
+import json
+import tempfile
+from urllib.error import URLError
+from urllib.request import urlopen, urlretrieve
+from urllib.parse import urlencode
 
 def fatal(ret_code, str = None):
   if str is not None:
@@ -63,56 +67,143 @@ def get_gshell_version():
   return ''
 
 
+def is_user_ext(ext_info):
+  if 'Path' in ext_info and not ext_info['Path'].startswith('/usr/share'):
+    return True
+  return False
+
+
+def reset_dconf_cfg(path):
+  run_prog('dconf', ['reset', '-f', path])
+
+
+def apply_dconf_cfg(path, cfg):
+  run_prog('dconf', ['load', '-f', path], cfg)
+
+
+def install_gext(fname):
+  run_prog('gnome-extensions', ['install', fname])
+
+
 def main(args):
 
   shell_version = get_gshell_version()
 
+  # build a list of ignored extensions
+  if args.exclude_from is not None:
+    try:
+      with open(args.exclude_from[0]) as infile:
+        for line in infile:
+          line = line.strip()
+          if len(line) > 0:
+            args.exclude.append(line)
+
+    except IOError as err:    
+      fatal(1, f"{err}")
+    except Exception as err:
+      fatal(1, f"Unexpected {err=}, {type(err)=}")
+
+
   if args.op == 'list':
+
+    # list installed gnome extensions
     for ext in get_gext_list():
-      print(ext)
+      if ext not in args.exclude:
+        print(ext)
 
   elif args.op == 'dump':
+
+    # save extensions with info and configs
     gexts = {}
     for ext in get_gext_list():
-      gexts[ext] = get_gext_info(ext)
-      gexts[ext]['dconf_dump'] = get_dconf_dump(ext)
+      if ext not in args.exclude:
+        gexts[ext] = get_gext_info(ext)
+        gexts[ext]['dconf_dump'] = get_dconf_dump(ext)
     try:
       with open(args.file, "w") as outfile:
         json.dump(gexts, outfile, sort_keys=True, indent=2)
+    except IOError as err:    
+      fatal(1, f"{err}")
     except Exception as err:
       fatal(1, f"Unexpected {err=}, {type(err)=}")
 
   elif args.op == 'load':
 
+    # set extension configurations
     published_gexts = {}
     try:
       with open(args.file) as infile:
         published_gexts = json.load(infile)
+    except IOError as err:    
+      fatal(1, f"{err}")
     except Exception as err:
       fatal(1, f"Unexpected {err=}, {type(err)=}")
 
     installed_gexts = {}
     for ext in get_gext_list():
-      installed_gexts[ext] = get_gext_info(ext)
+      if ext not in args.exclude:
+        installed_gexts[ext] = get_gext_info(ext)
 
     for ext in sorted(published_gexts.keys()):
-      if True:
-      # if ext not in installed_gexts:
-        print(f"Published extension {ext} is not installed")
-        params = { 'uuid': ext, 'shell_version': shell_version}
-        r = requests.get('https://extensions.gnome.org/extension-info/', params=params)
-        response = r.json()
+      if ext not in args.exclude:
 
-      elif (not args.force) and published_gexts[ext]["Version"] != installed_gexts[ext]["Version"]:
-        print(f"Extension version mismatch for {ext}")
-        print(f"  Published version: {published_gexts[ext]['Version']}")
-        print(f"  Installed version: {installed_gexts[ext]['Version']}")
-      else:
-        # this needs testing ...
-        path = f"/org/gnome/shell/extensions/{ext.split('@')[0]}/"
-        # run_prog('dconf', ['reset' '-f', path])
-        cfg = "\n".join(published_gexts[ext]['dconf_dump']) + "\n"
-        # run_prog('dconf' ['load', '-f', path], cfg)
+        if ext not in installed_gexts:
+          # extension is not installed
+          if is_user_ext(published_gexts[ext]):
+
+            # we are going to handle the download the hard way,
+            # with raw urllib, so we have no external dependencies
+            print(f"Published user extension '{ext}' is not installed")
+            params = { 'uuid': ext, 'shell_version': shell_version}
+            try:
+              response = urlopen(f"https://extensions.gnome.org/extension-info?{urlencode(params)}")
+              if response.getcode() == 200:
+                response= json.loads(response.read().decode('utf-8'))
+                if 'download_url' in response:
+
+                  # create a temp file for the downloaded zip archive
+                  temp = tempfile.NamedTemporaryFile(prefix="gext-", suffix=".zip", delete=False)
+                  fname = temp.name
+                  temp.close()
+                  do_install = False
+                  try:
+                    urlretrieve(f"https://extensions.gnome.org{response['download_url']}", fname)
+                    do_install = True
+                  except:
+                    print(f"Download URL failed for '{ext}' from extensions.gnome.org")
+
+                  if do_install:
+                    # install and configure
+                    install_gext(fname)
+                    cfg = "\n".join(published_gexts[ext]['dconf_dump']) + "\n"
+                    apply_dconf_cfg(path, cfg)
+
+                  try:
+                    os.remove(fname)
+                  except OSError as err:
+                    pass  
+                else:
+                  print(f"Download URL missing for '{ext}' from extensions.gnome.org")
+              else:
+                print(f"Error getting info for '{ext}' from extensions.gnome.org, Response={response.getcode()}")
+            except URLError as err:
+              print(f"Unable to get info for '{ext}' from extensions.gnome.org {err=}")
+
+          else:
+            print(f"Published system extension '{ext}' is not installed")
+
+        elif (not args.force) and published_gexts[ext]["Version"] != installed_gexts[ext]["Version"]:
+          # installed extension is a different version
+          # only apply config if forced
+          print(f"Extension version mismatch for '{ext}'")
+          print(f"  Published version: {published_gexts[ext]['Version']}")
+          print(f"  Installed version: {installed_gexts[ext]['Version']}")
+        else:
+          # reset the configuration to defaults and load
+          path = f"/org/gnome/shell/extensions/{ext.split('@')[0]}/"
+          cfg = "\n".join(published_gexts[ext]['dconf_dump']) + "\n"
+          reset_dconf_cfg(path)
+          apply_dconf_cfg(path, cfg)
 
   return 0
 
@@ -120,9 +211,11 @@ def main(args):
 if __name__ == "__main__":
   ensure_binaries(['gnome-extensions', 'dconf'])
   parser = argparse.ArgumentParser(prog='gnome-ext-util', description='Utility for saving and restoring gnome extensions', epilog='')
-  parser.add_argument("op", choices=['load', 'dump', 'list'], help="")
-  parser.add_argument("file", nargs='?', default=None, help="")
-  parser.add_argument("-f", "--force", action="store_true", help="")
+  parser.add_argument("op", choices=['load', 'dump', 'list'], help="Operation to perform")
+  parser.add_argument("file", nargs='?', default=None, help="File to load/dump")
+  parser.add_argument("-f", "--force", action="store_true", help="Force loading mismatched extension version")
+  parser.add_argument("--exclude", nargs="+", default=[], help="Exclude extension by UUID")
+  parser.add_argument("--exclude-from", nargs=1, help="File containing list of excluded UUID(s)")
   args = parser.parse_args()
 
   if args.op == "list" and args.file is not None:

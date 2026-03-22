@@ -11,7 +11,8 @@
       "request": "launch",
       "program": "${file}",
       "console": "integratedTerminal",
-      "args": [ "load", "test.json" ]
+      // "args": [ "list" ]
+      "args": [ "load", "${userHome}/.local/share/dotfiles/config/host-config/gnome-exts.json", "--exclude-from", "${userHome}/.local/share/dotfiles/config/host-config/gnome-exts.exclude" ]
       // "args": "${command:pickArgs}"
     }
   ]
