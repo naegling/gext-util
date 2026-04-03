@@ -7,6 +7,7 @@ import shutil
 import shlex
 import subprocess
 import re
+import yaml
 import json
 import tempfile
 from urllib.error import URLError
@@ -103,20 +104,35 @@ def main(args):
 
   shell_version = get_gshell_version()
 
+  # if just a filename, then look for file in default config directory
+  cfg_dir = None
+  if 'XDG_CONFIG_HOME' in os.environ:
+    cfg_dir = os.path.join(os.environ['XDG_CONFIG_HOME'], 'host-config')
+  elif 'HOME' in os.environ:
+    cfg_dir = os.path.join(os.environ['HOME'], '.config', 'host-config')
+
+  # get the expected filename
+  if args.file is not None and os.pathsep not in args.file and cfg_dir is not None:
+    args.file = os.path.join(cfg_dir, args.file)
+
+  args.exclude = set(args.exclude)
+
   # build a list of ignored extensions
   if args.exclude_from is not None:
+    if os.pathsep not in args.exclude_from and cfg_dir is not None:
+      args.exclude_from = os.path.join(cfg_dir, args.exclude_from)
+
     try:
       with open(args.exclude_from[0]) as infile:
         for line in infile:
           line = line.strip()
           if len(line) > 0:
-            args.exclude.append(line)
+            args.exclude.add(line)
 
     except IOError as err:
       fatal(1, f"{err}")
     except Exception as err:
       fatal(1, f"Unexpected {err=}, {type(err)=}")
-
 
   if args.op == 'list':
 
@@ -127,7 +143,7 @@ def main(args):
 
   elif args.op == 'dump':
 
-    # save extensions with info and configs
+    # save all extensions with info and configs
     gexts = {}
     for ext in get_gext_list():
       if ext not in args.exclude:
@@ -135,7 +151,7 @@ def main(args):
         gexts[ext]['dconf_dump'] = get_dconf_dump(ext)
     try:
       with open(args.file, "w") as outfile:
-        json.dump(gexts, outfile, sort_keys=True, indent=2)
+        yaml.safe_dump(gexts, outfile, indent=2, width=65535, default_style='\'')
     except IOError as err:
       fatal(1, f"{err}")
     except Exception as err:
@@ -147,7 +163,7 @@ def main(args):
     published_gexts = {}
     try:
       with open(args.file) as infile:
-        published_gexts = json.load(infile)
+        published_gexts = yaml.safe_load(infile)
     except IOError as err:
       fatal(1, f"{err}")
     except Exception as err:
