@@ -12,7 +12,7 @@
       "program": "${file}",
       "console": "integratedTerminal",
       // "args": [ "list" ]
-      "args": [ "load", "gnome-exts.yaml" ]
+      "args": [ "load", "--force", "gnome-exts.yaml" ]
       // "args": "${command:pickArgs}"
     }
   ]

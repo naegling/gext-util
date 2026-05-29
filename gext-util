@@ -89,7 +89,7 @@ def reset_dconf_cfg(path):
 
 
 def apply_dconf_cfg(path, cfg):
-  run_prog('dconf', ['load', '-f', path], cfg)
+  run_prog('dconf', ['load', '-f', path], input=cfg)
 
 
 def install_gext(fname):
@@ -225,7 +225,7 @@ def main(args):
           else:
             print(f"Published system extension '{ext}' is not installed")
 
-        elif (not args.force) and published_gexts[ext]["Version"] != installed_gexts[ext]["Version"]:
+        elif (not args.force) and "Version" in published_gexts[ext] and "Version" in installed_gexts[ext] and published_gexts[ext]["Version"] != installed_gexts[ext]["Version"]:
           # installed extension is a different version
           # only apply config if forced
           print(f"Extension version mismatch for '{ext}'")
